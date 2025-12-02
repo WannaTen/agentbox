@@ -314,14 +314,14 @@ run_container() {
         log_info "Creating Claude CLI volume and copying authentication from global config"
         docker volume create "$claude_volume_name" &>/dev/null
 
-        # Initialize volume with global Claude config if it exists
+        # Initialize volume with host config if it exists
+        # The VOLUME directive in Dockerfile ensures proper ownership
         if [[ -d "${HOME}/.claude" ]]; then
-            # Use a temporary container to copy data to the volume
             docker run --rm \
                 -v "${HOME}/.claude:/source:ro" \
                 -v "${claude_volume_name}:/dest" \
                 "$IMAGE_NAME" \
-                sh -c "cp -r /source/* /dest/ 2>/dev/null || true"
+                bash -c "cp -r /source/* /dest/ 2>/dev/null || true"
         fi
     fi
 
