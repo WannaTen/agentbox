@@ -332,6 +332,16 @@ run_container() {
 
     log_info "Claude CLI configuration mounted"
 
+    # Pass ANTHROPIC environment variables from host if set
+    if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
+        mount_opts+=(--env "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}")
+        log_info "ANTHROPIC_BASE_URL passed from host"
+    fi
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        mount_opts+=(--env "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
+        log_info "ANTHROPIC_API_KEY passed from host"
+    fi
+
     # Mount project directory path info for direnv approval translation
     if [[ -f "$PROJECT_DIR/.envrc" ]]; then
         # Pass the host project directory path as an environment variable

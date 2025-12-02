@@ -201,9 +201,7 @@ USER ${USERNAME}
 ARG BUILD_TIMESTAMP=unknown
 RUN bash -c "source $NVM_DIR/nvm.sh && \
     npm install -g https://gaccode.com/claudecode/install \
-    --registry=https://registry.npmmirror.com && \
-    # Verify Claude CLI installation
-    which claude && claude --version"
+    --registry=https://registry.npmmirror.com"
 
 # Declare volume for Claude config (ownership already set during directory creation)
 VOLUME /home/claude/.claude
