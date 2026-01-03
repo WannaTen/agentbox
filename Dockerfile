@@ -200,8 +200,7 @@ USER ${USERNAME}
 # following steps and consequently install the latest Claude version
 ARG BUILD_TIMESTAMP=unknown
 RUN bash -c "source $NVM_DIR/nvm.sh && \
-    npm install -g https://gaccode.com/claudecode/install \
-    --registry=https://registry.npmmirror.com"
+    npm install -g @anthropic-ai/claude-code"
 
 # Declare volume for Claude config (ownership already set during directory creation)
 VOLUME /home/claude/.claude

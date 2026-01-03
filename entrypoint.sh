@@ -6,6 +6,11 @@ set -e
 # Ensure proper PATH
 export PATH="$HOME/.local/bin:$PATH"
 
+# Symlink .claude.json from volume to home directory for persistence
+if [ -f "$HOME/.claude/.claude.json" ] && [ ! -e "$HOME/.claude.json" ]; then
+    ln -s "$HOME/.claude/.claude.json" "$HOME/.claude.json"
+fi
+
 # Source NVM if available
 if [ -s "$HOME/.nvm/nvm.sh" ]; then
     export NVM_DIR="$HOME/.nvm"
