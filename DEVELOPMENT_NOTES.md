@@ -44,17 +44,17 @@ After each successful rebuild, `docker image prune -f --filter "label=agentbox.v
 
 ### Mount Points
 ```bash
-/workspace              # Project directory (main mount, always current directory)
+/<project_name>         # Project directory (main mount, always current directory, using basename)
 /<directory_name>       # Additional directories (via --add-dir flag, using folder basenames e.g., /foo, /bar)
 /home/claude/.ssh       # SSH keys from ~/.agentbox/ssh/
 /home/claude/.gitconfig # Git config (read-only)
 /home/claude/.npm       # NPM cache
 /home/claude/.cache/pip # Pip cache
-/home/claude/.m2        # Maven cache
-/home/claude/.gradle    # Gradle cache
 /home/claude/.shell_history  # History directory (HISTFILE env var points to zsh_history inside)
 /home/claude/.claude    # Claude config (Docker volume)
 ```
+
+For example, if the host project is at `/home/user/projects/my-app`, it will be mounted at `/my-app` in the container, and the working directory will be set to `/my-app`.
 
 ## Testing Status
 - Basic functionality verified (help command, shell mode)
@@ -82,6 +82,17 @@ After each successful rebuild, `docker image prune -f --filter "label=agentbox.v
 - **Root Cause**: Host file ownership (host UID) vs container user (UID 1000)
 - **Attempted Fixes**: Various permission strategies, all had side effects
 - **Status**: Cosmetic issue, functionality works
+
+### Network Disconnections (macOS)
+- **Root Cause**: Docker Desktop for Mac network stack issues with high-volume data streams and concurrent connections
+- **Symptoms**: Disconnections when receiving many tokens or launching multiple tasks in Claude Code
+- **Implemented Fixes**:
+  - TCP keepalive settings (`tcp_keepalive_time=60`, `tcp_keepalive_intvl=10`, `tcp_keepalive_probes=6`)
+  - Increased shared memory (`--shm-size=256m`)
+  - Explicit DNS servers (Google DNS 8.8.8.8, 8.8.4.4)
+  - Node.js optimizations (`max-http-header-size=80000`, `UV_THREADPOOL_SIZE=128`)
+  - Extended HTTP/HTTPS timeouts (300s)
+- **Status**: Mitigated through runtime optimizations; monitor effectiveness
 
 ### Image Size
 Current image is large (~2GB) due to multiple language toolchains. Could optimize with:

@@ -182,9 +182,6 @@ set -g status-left '#[fg=green]#H '
 set -g status-right '#[fg=yellow]%Y-%m-%d %H:%M'
 EOF
 
-# Create workspace directory
-RUN mkdir -p /home/${USERNAME}/workspace
-
 # Switch back to root for entrypoint setup
 USER root
 
@@ -192,7 +189,7 @@ USER root
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Set working directory
+# Set default working directory (overridden by docker run -w at runtime)
 WORKDIR /workspace
 
 # Set the user for runtime

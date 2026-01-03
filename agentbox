@@ -201,7 +201,7 @@ validate_dir_path() {
     fi
 
     if [[ "$dir_realpath" == "$project_realpath" ]]; then
-        log_warning "Skipping duplicate: $dir (already mounted as /workspace)"
+        log_warning "Skipping duplicate: $dir (already mounted as project directory)"
         return 0  # Not an error, just skip
     fi
 
@@ -264,8 +264,9 @@ run_container() {
     fi
 
     # Prepare mount options
+    # Mount project directory using project name for correct project name detection
     local mount_opts=(
-        -v "$PROJECT_DIR:/workspace:z"
+        -v "$PROJECT_DIR:/$PROJECT_NAME:z"
     )
 
     mount_additional_dirs mount_opts "${extra_dirs_to_mount[@]}"
@@ -286,13 +287,11 @@ run_container() {
 
     # Mount cache directories for package managers
     local cache_dir="${HOME}/.cache/agentbox/${container_name}"
-    mkdir -p "${cache_dir}/npm" "${cache_dir}/pip" "${cache_dir}/maven" "${cache_dir}/gradle"
+    mkdir -p "${cache_dir}/npm" "${cache_dir}/pip"
 
     mount_opts+=(
         -v "${cache_dir}/npm:/home/claude/.npm"
         -v "${cache_dir}/pip:/home/claude/.cache/pip"
-        -v "${cache_dir}/maven:/home/claude/.m2"
-        -v "${cache_dir}/gradle:/home/claude/.gradle"
     )
 
     # Mount per-project persistent data
@@ -341,6 +340,14 @@ run_container() {
         mount_opts+=(--env "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
         log_info "ANTHROPIC_API_KEY passed from host"
     fi
+
+    # Network optimization environment variables for Node.js and HTTP clients
+    mount_opts+=(
+        --env "NODE_OPTIONS=--max-http-header-size=80000"
+        --env "UV_THREADPOOL_SIZE=128"
+        --env "HTTP_TIMEOUT=300000"
+        --env "HTTPS_TIMEOUT=300000"
+    )
 
     # Mount project directory path info for direnv approval translation
     if [[ -f "$PROJECT_DIR/.envrc" ]]; then
@@ -397,15 +404,21 @@ run_container() {
         fi
     done
 
-    # Run ephemeral container with --rm
+    # Run ephemeral container with --rm and network optimizations
     docker run -it --rm \
         --name "$container_name" \
         --hostname "agentbox-$PROJECT_NAME" \
         "${port_args[@]}" \
         "${mount_opts[@]}" \
         "${env_file_args[@]}" \
-        -w /workspace \
+        -w "/$PROJECT_NAME" \
         --init \
+        --shm-size=512m \
+        --sysctl net.ipv4.tcp_keepalive_time=60 \
+        --sysctl net.ipv4.tcp_keepalive_intvl=10 \
+        --sysctl net.ipv4.tcp_keepalive_probes=6 \
+        --dns 223.5.5.5 \
+        --dns 119.29.29.29 \
         "$IMAGE_NAME" \
         "${container_cmd[@]}"
 }
@@ -449,8 +462,8 @@ Examples:
 Containers are ephemeral and automatically removed when you exit.
 Package caches and shell history persist between sessions.
 
-Additional directories are mounted using their folder names (e.g., /foo, /bar).
-The current directory is always mounted as /workspace.
+All directories are mounted using their folder names (e.g., host ~/my-app -> container /my-app).
+Additional directories are mounted as their basename (e.g., /foo, /bar).
 EOF
 }
 

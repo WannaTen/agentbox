@@ -8,7 +8,7 @@ A Docker-based development environment for running Claude CLI in a more safe, is
 
 - **Shares project directory with host**: Maps a volume with the source code so that you can see and modify the agent's changes on the host machine - just like if you were running Claude without a container.
 - **Multi-Directory Support**: Mount additional project directories for cross-project development
-- **Unified Development Environment**: Single Docker image with Python, Node.js, Java, and Shell support
+- **Unified Development Environment**: Single Docker image with Python, Node.js, and Shell support
 - **Automatic Rebuilds**: Detects changes to Dockerfile/entrypoint and rebuilds automatically
 - **Per-Project Isolation**: Each project directory gets its own isolated container environment
 - **Persistent Data**: Package caches and shell history persist between sessions
@@ -36,8 +36,8 @@ agentbox --add-dir ~/library-code shell
 ```
 
 **How it works:**
-- Your current directory is always mounted as `/workspace`
-- Additional directories are mounted using their folder names (e.g., `/foo`, `/bar`)
+- Your current directory is mounted using its folder name (e.g., `~/my-app` → `/my-app`)
+- Additional directories are mounted using their folder names (e.g., `~/foo` → `/foo`)
 - All directories are writable - changes sync back to the host
 - The mounting order follows the order you specify in the flag
 
@@ -96,7 +96,6 @@ The unified Docker image includes:
 
 - **Python**: Latest version with `uv` for fast package management
 - **Node.js**: Latest LTS via NVM with npm, yarn, and pnpm
-- **Java**: Latest LTS via SDKMAN with Gradle
 - **Shell**: Zsh (default) and Bash with common utilities
 - **Claude CLI**: Pre-installed with per-project authentication
 
@@ -157,8 +156,6 @@ Due to [Claude Code bug #6130](https://github.com/anthropics/claude-code/issues/
 Package manager caches are stored in `~/.cache/agentbox/<container-name>/`:
 - npm packages: `~/.cache/agentbox/<container-name>/npm`
 - pip packages: `~/.cache/agentbox/<container-name>/pip`
-- Maven artifacts: `~/.cache/agentbox/<container-name>/maven`
-- Gradle cache: `~/.cache/agentbox/<container-name>/gradle`
 
 ### Shell History
 Zsh history is preserved in `~/.agentbox/projects/<container-name>/history`
