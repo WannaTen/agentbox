@@ -63,15 +63,130 @@ calculate_hash() {
 }
 
 # Get container name for current project
+# INSTANCE_NAME is always set (auto-assigned or user-specified)
 get_container_name() {
     local project_hash=$(echo -n "$PROJECT_DIR" | sha256sum | cut -c1-12)
-    echo "${CONTAINER_PREFIX}-${project_hash}"
+    echo "${CONTAINER_PREFIX}-${project_hash}-${INSTANCE_NAME}"
 }
 
-# Get Claude volume name for current project
+# Get next available instance number for auto-assignment
+get_next_instance_number() {
+    local project_hash=$(echo -n "$PROJECT_DIR" | sha256sum | cut -c1-12)
+    local pattern="${CONTAINER_PREFIX}-${project_hash}-"
+
+    # Get all running instance numbers (numeric only)
+    local used_numbers=$(docker ps --filter "name=${pattern}" --format "{{.Names}}" 2>/dev/null | \
+        sed -n "s/^${pattern}\([0-9][0-9]*\)$/\1/p" | sort -n)
+
+    # Find first unused number starting from 1
+    local num=1
+    while echo "$used_numbers" | grep -q "^${num}$"; do
+        ((num++))
+    done
+
+    echo "$num"
+}
+
+# List all running instances for current project
+list_instances() {
+    local project_hash=$(echo -n "$PROJECT_DIR" | sha256sum | cut -c1-12)
+    local pattern="${CONTAINER_PREFIX}-${project_hash}"
+
+    log_info "Running instances for: $PROJECT_NAME"
+    echo ""
+
+    local instances=$(docker ps --filter "name=${pattern}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null)
+
+    if [[ -z "$instances" ]] || [[ $(echo "$instances" | wc -l) -le 1 ]]; then
+        echo "  No running instances found."
+    else
+        echo "$instances"
+    fi
+    echo ""
+
+    # Also show stopped instances
+    local stopped=$(docker ps -a --filter "name=${pattern}" --filter "status=exited" --format "table {{.Names}}\t{{.Status}}" 2>/dev/null)
+    if [[ -n "$stopped" ]] && [[ $(echo "$stopped" | wc -l) -gt 1 ]]; then
+        log_info "Stopped instances:"
+        echo "$stopped"
+    fi
+}
+
+# Stop a specific instance
+stop_instance() {
+    local instance_name="$1"
+    local project_hash=$(echo -n "$PROJECT_DIR" | sha256sum | cut -c1-12)
+    local container_name
+
+    if [[ -n "$instance_name" ]]; then
+        container_name="${CONTAINER_PREFIX}-${project_hash}-${instance_name}"
+    else
+        container_name="${CONTAINER_PREFIX}-${project_hash}"
+    fi
+
+    if docker ps -q --filter "name=^${container_name}$" | grep -q .; then
+        log_info "Stopping instance: $container_name"
+        docker stop "$container_name"
+        log_success "Instance stopped"
+    else
+        log_error "Instance not found or not running: $container_name"
+        exit 1
+    fi
+}
+
+# Attach to an existing instance
+attach_instance() {
+    local instance_name="$1"
+    local project_hash=$(echo -n "$PROJECT_DIR" | sha256sum | cut -c1-12)
+    local container_name
+
+    if [[ -n "$instance_name" ]]; then
+        container_name="${CONTAINER_PREFIX}-${project_hash}-${instance_name}"
+    else
+        container_name="${CONTAINER_PREFIX}-${project_hash}"
+    fi
+
+    if docker ps -q --filter "name=^${container_name}$" | grep -q .; then
+        log_info "Attaching to instance: $container_name"
+        docker attach "$container_name"
+    else
+        log_error "Instance not found or not running: $container_name"
+        log_info "Use 'agentbox list' to see available instances"
+        exit 1
+    fi
+}
+
+# Execute command in an existing instance
+exec_instance() {
+    local instance_name="$1"
+    shift
+    local cmd_args=("$@")
+    local project_hash=$(echo -n "$PROJECT_DIR" | sha256sum | cut -c1-12)
+    local container_name
+
+    if [[ -n "$instance_name" ]]; then
+        container_name="${CONTAINER_PREFIX}-${project_hash}-${instance_name}"
+    else
+        container_name="${CONTAINER_PREFIX}-${project_hash}"
+    fi
+
+    if docker ps -q --filter "name=^${container_name}$" | grep -q .; then
+        if [[ ${#cmd_args[@]} -eq 0 ]]; then
+            docker exec -it "$container_name" /bin/zsh
+        else
+            docker exec -it "$container_name" "${cmd_args[@]}"
+        fi
+    else
+        log_error "Instance not found or not running: $container_name"
+        log_info "Use 'agentbox list' to see available instances"
+        exit 1
+    fi
+}
+
+# Get Claude volume name for current project (shared across all instances)
 get_claude_volume_name() {
-    local container_name=$(get_container_name)
-    echo "agentbox-claude-${container_name#agentbox-}"
+    local project_hash=$(echo -n "$PROJECT_DIR" | sha256sum | cut -c1-12)
+    echo "agentbox-claude-${project_hash}"
 }
 
 # Check if volume exists
@@ -297,8 +412,9 @@ run_container() {
         log_warning "SSH not configured. Run 'agentbox ssh-init' to enable SSH operations."
     fi
 
-    # Mount cache directories for package managers
-    local cache_dir="${HOME}/.cache/agentbox/${container_name}"
+    # Mount cache directories for package managers (shared per project)
+    local project_hash=$(echo -n "$PROJECT_DIR" | sha256sum | cut -c1-12)
+    local cache_dir="${HOME}/.cache/agentbox/${project_hash}"
     mkdir -p "${cache_dir}/npm" "${cache_dir}/pip"
 
     mount_opts+=(
@@ -306,8 +422,8 @@ run_container() {
         -v "${cache_dir}/pip:/home/claude/.cache/pip"
     )
 
-    # Mount per-project persistent data
-    local project_data_dir="${HOME}/.agentbox/projects/${container_name}"
+    # Mount per-project persistent data (shared per project)
+    local project_data_dir="${HOME}/.agentbox/projects/${project_hash}"
     local history_dir="${project_data_dir}/history"
     mkdir -p "${history_dir}"
 
@@ -317,8 +433,8 @@ run_container() {
         --env "HISTFILE=/home/claude/.shell_history/zsh_history"
     )
 
-    # Use Docker named volume for Claude config (like Anthropic's devcontainer)
-    local claude_volume_name="agentbox-claude-${container_name#agentbox-}"
+    # Use Docker named volume for Claude config (shared per project)
+    local claude_volume_name=$(get_claude_volume_name)
 
     # Check if volume exists and initialize if needed
     if ! docker volume inspect "$claude_volume_name" &>/dev/null; then
@@ -464,6 +580,7 @@ Usage:
 
 Options:
     -h, --help              Show this help message
+    -i, --instance NAME     Specify instance name (allows multiple instances per project)
     -p PORT                 Forward a port from host to container (can be used multiple times)
     --cleanup               Remove AgentBox image and cached data
     --rebuild               Force rebuild of the image
@@ -471,6 +588,10 @@ Options:
 
 Commands:
     shell [--admin]         Start interactive shell instead of Claude CLI
+    list                    List all running instances for current project
+    stop [NAME]             Stop a running instance (default instance if no name given)
+    attach [NAME]           Attach to a running instance
+    exec [NAME] [CMD...]    Execute command in a running instance
     ssh-init                Initialize SSH directory for AgentBox
     sync-claude [OPTIONS]   Sync host .claude config to Docker volume
                             Options:
@@ -482,8 +603,18 @@ Commands:
     Use 'shell --admin' to get a shell with sudo privileges.
     Other commands will be executed inside the container.
 
+Multi-Instance Usage:
+    agentbox -i dev                 # Start instance named "dev"
+    agentbox -i test -p 3002        # Start instance "test" with port 3002
+    agentbox list                   # List all instances for this project
+    agentbox stop dev               # Stop instance "dev"
+    agentbox attach dev             # Attach to instance "dev"
+    agentbox exec dev npm test      # Run command in instance "dev"
+
 Examples:
     agentbox                            # Start Claude CLI for current project
+    agentbox -i agent1                  # Start named instance "agent1"
+    agentbox -i agent2 -p 3002          # Start "agent2" with port 3002
     agentbox -p 3002                    # Forward port 3002
     agentbox -p 3002:8080               # Map host port 3002 to container port 8080
     agentbox shell                      # Start interactive shell instead of Claude
@@ -875,12 +1006,27 @@ main() {
     local cmd_args=()
     declare -a ports=()
     local extra_dirs=()
+    INSTANCE_NAME=""  # Global variable for instance name
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help)
                 show_help
                 exit 0
+                ;;
+            -i|--instance)
+                shift
+                if [[ -z "${1:-}" ]]; then
+                    log_error "Instance name requires a value"
+                    exit 1
+                fi
+                # Validate instance name (alphanumeric and hyphens only)
+                if [[ ! "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]]; then
+                    log_error "Instance name must be alphanumeric (hyphens allowed in middle)"
+                    exit 1
+                fi
+                INSTANCE_NAME="$1"
+                shift
                 ;;
             --cleanup)
                 cleanup_all=true
@@ -907,6 +1053,35 @@ main() {
                 fi
                 extra_dirs+=("$1")
                 shift
+                ;;
+            list)
+                check_docker
+                list_instances
+                exit 0
+                ;;
+            stop)
+                check_docker
+                shift
+                stop_instance "${1:-}"
+                exit 0
+                ;;
+            attach)
+                check_docker
+                shift
+                attach_instance "${1:-}"
+                exit 0
+                ;;
+            exec)
+                check_docker
+                shift
+                # First arg after exec is instance name (optional)
+                local exec_instance=""
+                if [[ -n "${1:-}" ]] && [[ ! "$1" =~ ^- ]]; then
+                    exec_instance="$1"
+                    shift
+                fi
+                exec_instance "$exec_instance" "$@"
+                exit 0
                 ;;
             shell)
                 shell_mode=true
@@ -945,8 +1120,28 @@ main() {
         exit 0
     fi
 
+    # Auto-assign instance name if not specified
+    if [[ -z "$INSTANCE_NAME" ]]; then
+        INSTANCE_NAME=$(get_next_instance_number)
+        log_info "Auto-assigned instance: $INSTANCE_NAME"
+    else
+        log_info "Starting instance: $INSTANCE_NAME"
+    fi
+
     # Get container name for current project
     local container_name=$(get_container_name)
+
+    # Check if container with same name is already running
+    if docker ps -q --filter "name=^${container_name}$" | grep -q .; then
+        log_error "Instance already running: $container_name"
+        if [[ -n "$INSTANCE_NAME" ]]; then
+            log_info "Use a different instance name with -i/--instance"
+        else
+            log_info "Use -i/--instance to start a named instance, or 'agentbox attach' to connect"
+        fi
+        log_info "Use 'agentbox list' to see all running instances"
+        exit 1
+    fi
 
     # Validate dir paths (batch all errors so user sees all problems at once)
     local project_realpath
