@@ -6,6 +6,19 @@ set -e
 # Ensure proper PATH
 export PATH="$HOME/.local/bin:$PATH"
 
+# Create symlink from host HOME path to container HOME for config file compatibility
+# Config files may contain absolute paths like /Users/john/.claude/ which need to work in container
+if [ -n "$HOST_HOME" ] && [ "$HOST_HOME" != "$HOME" ]; then
+    host_parent=$(dirname "$HOST_HOME")
+    if [ ! -d "$host_parent" ]; then
+        sudo mkdir -p "$host_parent"
+    fi
+    if [ ! -e "$HOST_HOME" ]; then
+        sudo ln -s "$HOME" "$HOST_HOME"
+        echo "✅ Created symlink: $HOST_HOME -> $HOME"
+    fi
+fi
+
 # Symlink .claude.json from volume to home directory for persistence
 if [ -f "$HOME/.claude/.claude.json" ] && [ ! -e "$HOME/.claude.json" ]; then
     ln -s "$HOME/.claude/.claude.json" "$HOME/.claude.json"

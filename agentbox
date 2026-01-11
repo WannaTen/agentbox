@@ -465,6 +465,9 @@ run_container() {
     # Set Claude config directory environment variable
     mount_opts+=(--env "CLAUDE_CONFIG_DIR=/home/claude/.claude")
 
+    # Pass host HOME path for symlink creation (config files contain absolute paths)
+    mount_opts+=(--env "HOST_HOME=${HOME}")
+
     # Pass ANTHROPIC environment variables from host if set
     # if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
     #     mount_opts+=(--env "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}")
