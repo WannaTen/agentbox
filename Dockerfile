@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         # Network tools
         openssh-client netcat-openbsd socat dnsutils iputils-ping \
         # Archive tools
-        zip unzip tar gzip bzip2 xz-utils \
+        zip unzip tar gzip bzip2 xz-utils rsync \
         # JSON/YAML tools
         jq yq \
         # Process management

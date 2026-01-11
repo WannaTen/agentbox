@@ -12,7 +12,7 @@ A Docker-based development environment for running Claude CLI in a more safe, is
 - **Automatic Rebuilds**: Detects changes to Dockerfile/entrypoint and rebuilds automatically
 - **Per-Project Isolation**: Each project directory gets its own isolated container environment
 - **Persistent Data**: Package caches and shell history persist between sessions
-- **Claude CLI Integration**: Built-in support for Claude CLI with per-project authentication
+- **Claude CLI Integration**: Global config files are bind-mounted for real-time sync; runtime data stored in per-project volumes
 - **SSH Support**: Dedicated SSH directory for secure Git operations
 
 ## Requirements
@@ -87,7 +87,10 @@ Single Dockerfile → Build once → agentbox:latest image
 Persistent data (survives container removal):
   Cache: ~/.cache/agentbox/agentbox-<hash>/
   History: ~/.agentbox/projects/agentbox-<hash>/history/
-  Claude: Docker volume agentbox-claude-<hash>
+  Claude runtime: Docker volume agentbox-claude-<hash>
+
+Bind-mounted from host (real-time sync):
+  Global config: ~/.claude/settings.json, commands/, etc.
 ```
 
 ## Languages and Tools
@@ -160,11 +163,25 @@ Package manager caches are stored in `~/.cache/agentbox/<container-name>/`:
 ### Shell History
 Zsh history is preserved in `~/.agentbox/projects/<container-name>/history`
 
-### Claude CLI Authentication
-Authentication data is stored in Docker named volumes (`agentbox-claude-<hash>`), providing:
-- Per-project Claude CLI configuration
-- Persistent authentication across container restarts
+### Claude CLI Configuration
+Global configuration files from `~/.claude/` are bind-mounted into the container for real-time sync:
+- `settings.json`, `settings.local.json` - Claude settings
+- `.claude.json`, `.claude.json.backup` - Authentication data
+- `commands/`, `ide/`, `plugins/`, `skills/` - Custom extensions
+
+Runtime data (like `projects/` directory) is stored in Docker named volumes (`agentbox-claude-<hash>`), providing:
+- Per-project Claude CLI runtime data
 - Isolation between different projects
+
+### Exporting Volume Data
+To export the volume contents (runtime data) to your project directory:
+```bash
+# Export to ./.claude-volume/
+agentbox sync-claude export
+
+# Export to a specific directory
+agentbox sync-claude export --to ~/backup
+```
 
 ## Volume Management
 
@@ -176,17 +193,17 @@ docker volume ls | grep agentbox-claude
 
 ### Cleanup
 ```bash
-# Remove specific project's authentication
+# Remove specific project's volume
 docker volume rm agentbox-claude-<hash>
 
-# Remove all AgentBox volumes (clears all authentication)
+# Remove all AgentBox volumes
 docker volume ls -q | grep agentbox-claude | xargs docker volume rm
 
 # Full cleanup (removes image and optionally cached data)
 agentbox --cleanup
 ```
 
-**Note**: Removing volumes only affects authentication - your project files remain untouched.
+**Note**: Removing volumes only affects runtime data - your project files and global config remain untouched.
 
 ## Advanced Usage
 

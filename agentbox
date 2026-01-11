@@ -433,49 +433,37 @@ run_container() {
         --env "HISTFILE=/home/claude/.shell_history/zsh_history"
     )
 
-    # Use Docker named volume for Claude config (shared per project)
+    # Use Docker named volume for Claude runtime data (shared per project)
     local claude_volume_name=$(get_claude_volume_name)
 
-    # Check if volume exists and initialize if needed
+    # Create volume if it doesn't exist (for Claude's runtime data like projects/, etc.)
     if ! docker volume inspect "$claude_volume_name" &>/dev/null; then
-        log_info "Creating Claude CLI volume and copying authentication from global config"
+        log_info "Creating Claude CLI volume for runtime data"
         docker volume create "$claude_volume_name" &>/dev/null
-
-        # Initialize volume with host config if it exists
-        if [[ -d "${HOME}/.claude" ]]; then
-            log_info "Copying .claude config from host to volume..."
-            docker run --rm \
-                -v "${HOME}/.claude:/source:ro" \
-                -v "${claude_volume_name}:/home/claude/.claude" \
-                "$IMAGE_NAME" \
-                bash -c "cp -r /source/. /home/claude/.claude/ && echo 'Config copied successfully' || echo 'Warning: Some files may not have been copied'"
-        fi
-
-        # Copy ~/.claude.json to volume if it exists
-        if [[ -f "${HOME}/.claude.json" ]]; then
-            log_info "Copying .claude.json from host to volume..."
-            docker run --rm \
-                -v "${HOME}/.claude.json:/source/.claude.json:ro" \
-                -v "${claude_volume_name}:/home/claude/.claude" \
-                "$IMAGE_NAME" \
-                bash -c "cp /source/.claude.json /home/claude/.claude/.claude.json"
-        fi
     fi
 
     mount_opts+=(-v "${claude_volume_name}:/home/claude/.claude")
 
-    # Bind mount settings.json for real-time sync with cc-switch
-    if [[ -f "${HOME}/.claude/settings.json" ]]; then
-        mount_opts+=(-v "${HOME}/.claude/settings.json:/home/claude/.claude/settings.json:rw")
-        log_info "Claude settings.json mounted for real-time sync"
+    # Bind mount all global config files/directories for real-time sync
+    local mounted_configs=()
+    for config_item in "${CLAUDE_CONFIG_FILES[@]}"; do
+        local host_path="${HOME}/.claude/${config_item}"
+        local container_path="/home/claude/.claude/${config_item}"
+
+        if [[ -e "$host_path" ]]; then
+            mount_opts+=(-v "${host_path}:${container_path}:rw")
+            mounted_configs+=("$config_item")
+        fi
+    done
+
+    if [[ ${#mounted_configs[@]} -gt 0 ]]; then
+        log_info "Global config mounted: ${mounted_configs[*]}"
     else
-        log_warning "~/.claude/settings.json not found - using volume-only config"
+        log_warning "No global config files found in ~/.claude/"
     fi
 
     # Set Claude config directory environment variable
     mount_opts+=(--env "CLAUDE_CONFIG_DIR=/home/claude/.claude")
-
-    log_info "Claude CLI configuration mounted"
 
     # Pass ANTHROPIC environment variables from host if set
     # if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
@@ -593,10 +581,7 @@ Commands:
     attach [NAME]           Attach to a running instance
     exec [NAME] [CMD...]    Execute command in a running instance
     ssh-init                Initialize SSH directory for AgentBox
-    sync-claude [OPTIONS]   Sync host .claude config to Docker volume
-                            Options:
-                              --dry-run   Show differences without syncing
-                              --auto      Sync all without confirmation
+    sync-claude export      Export volume contents to local directory
 
     If no command is provided, Claude CLI will be started automatically.
     Use 'shell' command to get a shell instead of Claude CLI.
@@ -624,12 +609,11 @@ Examples:
     agentbox --cleanup                  # Remove image and optionally cached data
     agentbox --rebuild                  # Force rebuild image
     agentbox ssh-init                   # Set up SSH for AgentBox
-    agentbox sync-claude                # Interactively sync .claude config
-    agentbox sync-claude --dry-run      # Show config differences only
-    agentbox sync-claude --auto         # Auto-sync all differences
+    agentbox sync-claude export         # Export volume to ./.claude-volume/
 
 Containers are ephemeral and automatically removed when you exit.
 Package caches and shell history persist between sessions.
+Global config files (~/.claude/settings.json, commands/, etc.) are bind-mounted.
 
 All directories are mounted using their folder names (e.g., host ~/my-app -> container /my-app).
 Additional directories are mounted as their basename (e.g., /foo, /bar).
@@ -666,258 +650,75 @@ cleanup_all() {
     log_success "Cleanup complete"
 }
 
-# Analyze differences between host .claude and volume
-analyze_claude_diff() {
+# Config files/directories that should be bind mounted from host
+readonly CLAUDE_CONFIG_FILES=(
+    "settings.json"
+    "settings.local.json"
+    ".claude.json"
+    ".claude.json.backup"
+    "commands"
+    "ide"
+    "plugins"
+    "skills"
+)
+
+# Pull all files from volume
+pull_from_volume() {
     local volume_name="$1"
+    local target_dir="$2"
 
-    docker run --rm \
-        -v "${HOME}/.claude:/source:ro" \
-        -v "${volume_name}:/target" \
-        "$IMAGE_NAME" \
-        bash -c 'rsync -avn --itemize-changes /source/ /target/ 2>/dev/null | grep -E "^[><*]" | grep -v "/$"'
-}
+    # Default target directory
+    if [[ -z "$target_dir" ]]; then
+        target_dir="${PROJECT_DIR}/.claude-volume"
+    fi
 
-# Display diff summary
-display_diff_summary() {
-    local diff_data="$1"
+    # Expand tilde
+    target_dir=$(expand_tilde "$target_dir")
 
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "Configuration Differences (host → volume)"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # Create target directory
+    mkdir -p "$target_dir"
 
-    local new_count=0
-    local modified_count=0
-    local deleted_count=0
-
-    while IFS= read -r line; do
-        local status_code="${line:0:11}"
-        local file_path="${line:12}"
-
-        if [[ "$status_code" =~ ^\>f\+\+\+\+\+\+\+\+\+ ]]; then
-            echo -e "${GREEN}[NEW]     ${NC} $file_path"
-            ((new_count++))
-        elif [[ "$status_code" =~ ^\>f\. ]]; then
-            echo -e "${YELLOW}[MODIFIED]${NC} $file_path"
-            ((modified_count++))
-        elif [[ "$status_code" =~ ^\*deleting ]]; then
-            echo -e "${RED}[DELETED] ${NC} $file_path ${CYAN}[volume only]${NC}"
-            ((deleted_count++))
-        fi
-    done <<< "$diff_data"
-
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "Summary: $new_count new, $modified_count modified, $deleted_count deleted (volume only)"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-}
-
-# Show detailed diff for a file
-show_file_diff() {
-    local volume_name="$1"
-    local file_path="$2"
-
-    local temp_dir=$(mktemp -d)
+    log_info "Exporting from volume to: $target_dir"
 
     docker run --rm \
         -v "${volume_name}:/source:ro" \
-        -v "${temp_dir}:/output" \
+        -v "$target_dir:/target" \
         "$IMAGE_NAME" \
-        bash -c "mkdir -p /output/\$(dirname '$file_path') && cp '/source/$file_path' '/output/$file_path' 2>/dev/null || true" &>/dev/null
-
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "Diff for: $file_path"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-    if [[ -f "${temp_dir}/$file_path" ]]; then
-        diff -u "${temp_dir}/$file_path" "${HOME}/.claude/$file_path" | tail -n +3 | while IFS= read -r line; do
-            if [[ "$line" =~ ^\+ ]]; then
-                echo -e "${GREEN}${line}${NC}"
-            elif [[ "$line" =~ ^\- ]]; then
-                echo -e "${RED}${line}${NC}"
-            elif [[ "$line" =~ ^@ ]]; then
-                echo -e "${CYAN}${line}${NC}"
-            else
-                echo "$line"
-            fi
-        done || echo "No differences or file is binary"
-    else
-        echo -e "${GREEN}+ New file (not in volume)${NC}"
-    fi
-
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-    rm -rf "$temp_dir"
-}
-
-# Sync a single file to volume
-sync_file_to_volume() {
-    local volume_name="$1"
-    local file_path="$2"
-
-    docker run --rm \
-        -v "${HOME}/.claude:/source:ro" \
-        -v "${volume_name}:/target" \
-        "$IMAGE_NAME" \
-        bash -c "mkdir -p /target/\$(dirname '$file_path') && cp -p '/source/$file_path' '/target/$file_path'" &>/dev/null
+        bash -c 'rsync -av /source/ /target/'
 
     if [[ $? -eq 0 ]]; then
-        log_success "Synced: $file_path"
-        return 0
-    else
-        log_error "Failed to sync: $file_path"
-        return 1
-    fi
-}
-
-# Sync all files to volume
-sync_all_files() {
-    local volume_name="$1"
-
-    log_info "Syncing all files from host to volume..."
-
-    docker run --rm \
-        -v "${HOME}/.claude:/source:ro" \
-        -v "${volume_name}:/target" \
-        "$IMAGE_NAME" \
-        bash -c 'rsync -av /source/ /target/' &>/dev/null
-
-    if [[ $? -eq 0 ]]; then
-        log_success "All files synced successfully"
-        return 0
-    else
-        log_error "Some files failed to sync"
-        return 1
-    fi
-}
-
-# Interactive sync for individual files
-sync_individually() {
-    local volume_name="$1"
-    local diff_data="$2"
-
-    local synced_count=0
-    local skipped_count=0
-
-    while IFS= read -r line; do
-        local status_code="${line:0:11}"
-        local file_path="${line:12}"
-
-        # Skip deleted files (volume only)
-        if [[ "$status_code" =~ ^\*deleting ]]; then
-            continue
-        fi
-
-        local status_label=""
-        if [[ "$status_code" =~ ^\>f\+\+\+\+\+\+\+\+\+ ]]; then
-            status_label="${GREEN}[NEW]${NC}"
-        elif [[ "$status_code" =~ ^\>f\. ]]; then
-            status_label="${YELLOW}[MODIFIED]${NC}"
-        else
-            continue
-        fi
-
+        log_success "All files exported successfully"
         echo ""
-        echo -e "$status_label $file_path"
-
-        # Special warning for settings.json
-        if [[ "$file_path" == "settings.json" ]]; then
-            log_warning "This file is already synced via bind mount"
-        fi
-
-        while true; do
-            echo -n "  [Y]es / [N]o / [D]iff / [Q]uit: "
-            read -r choice
-
-            case "$choice" in
-                [Yy])
-                    sync_file_to_volume "$volume_name" "$file_path"
-                    ((synced_count++))
-                    break
-                    ;;
-                [Nn])
-                    log_info "Skipped: $file_path"
-                    ((skipped_count++))
-                    break
-                    ;;
-                [Dd])
-                    show_file_diff "$volume_name" "$file_path"
-                    # Ask again after showing diff
-                    ;;
-                [Qq])
-                    echo ""
-                    log_info "Sync cancelled. Synced: $synced_count, Skipped: $skipped_count"
-                    return 0
-                    ;;
-                *)
-                    echo "  Invalid choice. Please enter Y, N, D, or Q."
-                    ;;
-            esac
-        done
-    done <<< "$diff_data"
-
-    echo ""
-    log_success "Sync complete. Synced: $synced_count, Skipped: $skipped_count"
+        echo "Files saved to: $target_dir"
+        ls -la "$target_dir" | head -20
+    else
+        log_error "Failed to export files"
+        return 1
+    fi
 }
 
-# Interactive sync with batch options
-interactive_sync() {
-    local volume_name="$1"
-    local diff_data="$2"
+# Show sync-claude help
+show_sync_claude_help() {
+    cat << EOF
+Usage: agentbox sync-claude <command> [options]
 
-    echo ""
-    echo "Sync options:"
-    echo "  [A] Sync all files"
-    echo "  [S] Skip all"
-    echo "  [I] Choose individually"
-    echo "  [Q] Quit"
-    echo -n "Your choice: "
-    read -r choice
+Commands:
+    export [--to DIR]   Export volume contents to local directory
+                        Default: ./.claude-volume/
 
-    case "$choice" in
-        [Aa])
-            sync_all_files "$volume_name"
-            ;;
-        [Ss])
-            log_info "Skipped all changes"
-            ;;
-        [Ii])
-            sync_individually "$volume_name" "$diff_data"
-            ;;
-        [Qq])
-            log_info "Sync cancelled"
-            exit 0
-            ;;
-        *)
-            log_error "Invalid choice"
-            exit 1
-            ;;
-    esac
+Examples:
+    agentbox sync-claude export                 # Export to ./.claude-volume/
+    agentbox sync-claude export --to ~/backup   # Export to specific directory
+
+Note: Global config files (settings.json, commands/, etc.) are now
+automatically bind-mounted from ~/.claude/ - no manual sync needed.
+EOF
 }
 
 # Main sync-claude command
 sync_claude_config() {
-    local dry_run=false
-    local auto_sync=false
-
-    # Parse options
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --dry-run)
-                dry_run=true
-                shift
-                ;;
-            --auto)
-                auto_sync=true
-                shift
-                ;;
-            *)
-                log_error "Unknown option: $1"
-                echo "Usage: agentbox sync-claude [--dry-run] [--auto]"
-                exit 1
-                ;;
-        esac
-    done
+    local subcommand="${1:-}"
+    shift || true
 
     # Check Docker
     check_docker
@@ -932,33 +733,45 @@ sync_claude_config() {
         exit 1
     fi
 
-    # Check if host directory exists
-    if [[ ! -d "${HOME}/.claude" ]]; then
-        log_error "Host .claude directory not found: ${HOME}/.claude"
-        exit 1
-    fi
+    case "$subcommand" in
+        export|pull)
+            local target_dir=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --to)
+                        shift
+                        target_dir="${1:-}"
+                        if [[ -z "$target_dir" ]]; then
+                            log_error "--to requires a directory path"
+                            exit 1
+                        fi
+                        shift
+                        ;;
+                    *)
+                        log_error "Unknown option: $1"
+                        show_sync_claude_help
+                        exit 1
+                        ;;
+                esac
+            done
+            pull_from_volume "$volume_name" "$target_dir"
+            ;;
 
-    # Analyze differences
-    log_info "Analyzing differences between host and volume..."
-    local diff_data=$(analyze_claude_diff "$volume_name")
+        -h|--help|help)
+            show_sync_claude_help
+            ;;
 
-    if [[ -z "$diff_data" ]]; then
-        log_success "No differences found - configurations are in sync"
-        exit 0
-    fi
+        "")
+            # No subcommand - show help
+            show_sync_claude_help
+            ;;
 
-    # Display differences
-    display_diff_summary "$diff_data"
-
-    # Execute sync based on mode
-    if [[ "$dry_run" == "true" ]]; then
-        log_info "Dry run mode - no changes made"
-    elif [[ "$auto_sync" == "true" ]]; then
-        echo ""
-        sync_all_files "$volume_name"
-    else
-        interactive_sync "$volume_name" "$diff_data"
-    fi
+        *)
+            log_error "Unknown subcommand: $subcommand"
+            show_sync_claude_help
+            exit 1
+            ;;
+    esac
 }
 
 # Set up dedicated SSH directory for AgentBox
