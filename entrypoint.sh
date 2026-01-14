@@ -24,6 +24,23 @@ if [ -f "$HOME/.claude/.claude.json" ] && [ ! -e "$HOME/.claude.json" ]; then
     ln -s "$HOME/.claude/.claude.json" "$HOME/.claude.json"
 fi
 
+# Ensure hasCompletedOnboarding is set to true in .claude.json
+CLAUDE_JSON="$HOME/.claude/.claude.json"
+if [ -f "$CLAUDE_JSON" ]; then
+    # File exists, check if hasCompletedOnboarding is already true
+    current_value=$(jq -r '.hasCompletedOnboarding // false' "$CLAUDE_JSON" 2>/dev/null)
+    if [ "$current_value" != "true" ]; then
+        # Update or add the field
+        jq '. + {"hasCompletedOnboarding": true}' "$CLAUDE_JSON" > "$CLAUDE_JSON.tmp" && \
+            mv "$CLAUDE_JSON.tmp" "$CLAUDE_JSON"
+        echo "✅ Set hasCompletedOnboarding to true"
+    fi
+elif [ -d "$HOME/.claude" ]; then
+    # Directory exists but file doesn't, create new file
+    echo '{"hasCompletedOnboarding": true}' > "$CLAUDE_JSON"
+    echo "✅ Created .claude.json with hasCompletedOnboarding"
+fi
+
 # Source NVM if available
 if [ -s "$HOME/.nvm/nvm.sh" ]; then
     export NVM_DIR="$HOME/.nvm"
